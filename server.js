@@ -16,7 +16,7 @@ const waitingQueues = {
 
 const io = new Server(httpServer, {
   cors: {
-    origin: "https://chess-app-beryl.vercel.app/",
+    origin: "https://chess-app-beryl.vercel.app",
     methods: ["GET", "POST"],
   },
 });
