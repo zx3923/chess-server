@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
+import Timer from "./timer";
 
 const hostname = "localhost";
 
@@ -62,7 +63,11 @@ io.on("connection", (socket) => {
             color: player2Color,
           },
         ],
-        timers: { white: initialTime, black: initialTime },
+        // timers: { white: initialTime, black: initialTime },
+        timers: {
+          white: new Timer(initialTime),
+          black: new Timer(initialTime),
+        },
         lastMoveTime: Date.now(),
         currentTurn: "white",
       });
@@ -82,6 +87,9 @@ io.on("connection", (socket) => {
         roomId,
         initialTime,
       });
+
+      const room = rooms.get(roomId);
+      room.timers.white.start();
     } else {
       console.log("No match found, added to queue");
     }
@@ -143,19 +151,20 @@ io.on("connection", (socket) => {
     const room = rooms.get(roomId);
     if (!room) return callback({ error: "Room not found" });
 
-    const now = Date.now();
-    const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    const timers = { ...room.timers };
-    timers[room.currentTurn] -= elapsedTime;
+    // const now = Date.now();
+    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
+    // const timers = { ...room.timers };
+    const timers = room.timers;
+    // timers[room.currentTurn] -= elapsedTime;
 
-    if (room.timers[room.currentTurn] <= 0) {
-      io.to(room.roomId).emit("gameOver", {
-        winner: room.currentTurn === "white" ? "black" : "white",
-        reason: "timeout",
-      });
-      // rooms.delete(room.roomId);
-      return;
-    }
+    // if (room.timers[room.currentTurn] <= 0) {
+    // io.to(room.roomId).emit("gameOver", {
+    // winner: room.currentTurn === "white" ? "black" : "white",
+    // reason: "timeout",
+    // });
+    // rooms.delete(room.roomId);
+    // return;
+    // }
 
     callback({ timers });
   });
