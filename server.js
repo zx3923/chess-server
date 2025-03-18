@@ -117,25 +117,25 @@ io.on("connection", (socket) => {
 
     const room = rooms.get(data.room);
     if (!room) return;
-    console.log("room: ", room);
+    // console.log("room: ", room);
 
-    const now = Date.now();
-    console.log(now);
-    const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    console.log(elapsedTime);
-    room.timers[room.currentTurn] -= elapsedTime; // 현재 턴의 타이머 감소
+    // const now = Date.now();
+    // console.log(now);
+    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
+    // console.log(elapsedTime);
+    // room.timers[room.currentTurn] -= elapsedTime; // 현재 턴의 타이머 감소
 
-    if (room.timers[room.currentTurn] <= 0) {
-      io.to(room.roomId).emit("gameOver", {
-        winner: room.currentTurn === "white" ? "black" : "white",
-        reason: "timeout",
-      });
-      // rooms.delete(room.roomId);
-      return;
-    }
+    // if (room.timers[room.currentTurn] <= 0) {
+    // io.to(room.roomId).emit("gameOver", {
+    // winner: room.currentTurn === "white" ? "black" : "white",
+    // reason: "timeout",
+    // });
+    // rooms.delete(room.roomId);
+    // return;
+    // }
 
-    room.lastMoveTime = now;
-    room.currentTurn = room.currentTurn === "white" ? "black" : "white";
+    // room.lastMoveTime = now;
+    // room.currentTurn = room.currentTurn === "white" ? "black" : "white";
 
     socket.to(data.room).emit("move", data.move);
   });
@@ -257,11 +257,11 @@ function getRatingByMode(player, gameMode) {
 function getInitialTime(gameMode) {
   switch (gameMode) {
     case "rapid":
-      return 10 * 60; // 10분
+      return 10 * 60 * 1000; // 10분
     case "blitz":
-      return 3 * 60; // 3분
+      return 3 * 60 * 1000; // 3분
     case "bullet":
-      return 1 * 60; // 1분
+      return 1 * 60 * 1000; // 1분
     default:
       throw new Error(`Unknown game mode: ${gameMode}`);
   }
