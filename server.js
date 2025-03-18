@@ -68,7 +68,7 @@ io.on("connection", (socket) => {
           white: new Timer(initialTime),
           black: new Timer(initialTime),
         },
-        lastMoveTime: Date.now(),
+        // lastMoveTime: Date.now(),
         currentTurn: "white",
       });
 
@@ -117,8 +117,11 @@ io.on("connection", (socket) => {
 
     const room = rooms.get(data.room);
     if (!room) return;
-    // console.log("room: ", room);
-
+    const color = data.color;
+    room.timers[room.currentTurn].stop();
+    room.currentTurn = color;
+    console.log(room.currentTurn);
+    room.timers[room.currentTurn].start();
     // const now = Date.now();
     // console.log(now);
     // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
