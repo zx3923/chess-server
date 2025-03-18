@@ -15,6 +15,7 @@ export default class Timer {
   // 마지막 startTime 이후 경과 시간 반환
   getElapsedTimeSinceLastStart() {
     if (!this.startTime) return 0;
+    console.log(Date.now() - this.startTime);
     return Date.now() - this.startTime;
   }
 
