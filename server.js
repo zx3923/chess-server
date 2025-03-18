@@ -154,7 +154,10 @@ io.on("connection", (socket) => {
     // const now = Date.now();
     // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
     // const timers = { ...room.timers };
-    const timers = room.timers;
+    const timers = {
+      white: room.timers.white.getTime(),
+      black: room.timers.black.getTime(),
+    };
     // timers[room.currentTurn] -= elapsedTime;
 
     // if (room.timers[room.currentTurn] <= 0) {
