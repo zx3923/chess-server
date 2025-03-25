@@ -23,21 +23,36 @@ const io = new Server(httpServer, {
 });
 
 io.on("connection", (socket) => {
-  console.log("a user connected");
+  console.log("a user connected. id: ", socket.id);
   // 매칭 요청
-  socket.on("joinQueue", ({ user, gameMode }) => {
+  socket.on("joinQueue", ({ user, gameMode }, callback) => {
     if (!waitingQueues[gameMode]) {
       console.error(`Invalid game mode: ${gameMode}`);
       return;
     }
 
+    const existingRoom = [...rooms.values()].find((room) =>
+      room.players.some((player) => player.id === user.id)
+    );
+
+    if (existingRoom) {
+      console.log(`User ${user.username} is already in a room.`);
+      console.log(existingRoom);
+      if (existingRoom.game.getIsGameOver()) {
+        // 방이 있지만 게임이 이미 종료되었을 경우 방 삭제 후 매칭 시도
+        rooms.delete(existingRoom.roomId);
+      } else {
+        return callback({ success: false, message: "Already in a room" });
+      }
+    }
+
     waitingQueues[gameMode].push({ socketId: socket.id, ...user });
     const match = tryToMatch(waitingQueues[gameMode], gameMode);
 
+    console.log("!!");
     // 적합한 매칭이 있다면
     if (match) {
       const { player1, player2 } = match;
-      console.log(player1);
       const player1Color = Math.random() < 0.5 ? "white" : "black";
       const player2Color = player1Color === "white" ? "black" : "white";
       const roomId = uuidv4();
@@ -49,20 +64,25 @@ io.on("connection", (socket) => {
         io.to(player.socketId).socketsJoin(roomId)
       );
 
+      const roomPlayer1 = {
+        socketId: player1.socketId,
+        id: player1.id,
+        username: player1.username,
+        color: player1Color,
+        rating: getRatingByMode(player1, gameMode),
+      };
+
+      const roomPlayer2 = {
+        socketId: player2.socketId,
+        id: player2.id,
+        username: player2.username,
+        color: player2Color,
+        rating: getRatingByMode(player2, gameMode),
+      };
+
       rooms.set(roomId, {
         roomId,
-        players: [
-          {
-            id: player1.socketId,
-            username: player1.username,
-            color: player1Color,
-          },
-          {
-            id: player2.socketId,
-            username: player2.username,
-            color: player2Color,
-          },
-        ],
+        players: [roomPlayer1, roomPlayer2],
         // timers: { white: initialTime, black: initialTime },
         timers: {
           white: new Timer(initialTime),
@@ -70,6 +90,9 @@ io.on("connection", (socket) => {
         },
         // lastMoveTime: Date.now(),
         currentTurn: "white",
+        gameMode,
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        game: new Game("playerVsPlayer", initialTime, roomPlayer1, roomPlayer2),
       });
 
       io.to(player1.socketId).emit("matchFound", {
@@ -87,12 +110,17 @@ io.on("connection", (socket) => {
         roomId,
         initialTime,
       });
-
       const room = rooms.get(roomId);
+      console.log(room);
+
       room.timers.white.start();
+      room.game.play();
+
+      io.in(room.roomId).emit("gameStart", room);
     } else {
       console.log("No match found, added to queue");
     }
+    callback({ success: true });
   });
 
   // 매칭 취소
@@ -111,36 +139,304 @@ io.on("connection", (socket) => {
     }
   });
 
+  // 컴퓨터 게임
+  socket.on(
+    "playComputer",
+    async ({ user, color, winBar, bestMove }, callback) => {
+      const roomId = uuidv4();
+      const player = {
+        socketId: socket.id,
+        id: user.id,
+        username: user.username,
+        color: color,
+      };
+      const computer = {
+        color: color === "white" ? "black" : "white",
+      };
+
+      rooms.set(roomId, {
+        roomId,
+        players: [player, computer],
+        currentTurn: "white",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        game: new Game("playerVsComputer", 0, player, computer),
+      });
+      const room = rooms.get(roomId);
+      room.game.setShowWinBar(winBar);
+      room.game.setShowBestMoves(bestMove);
+
+      room.game.play();
+      socket.emit("gameStart", room);
+
+      if (color === "black") {
+        const move = await room.game.makeComputerMove();
+        console.log(1);
+        console.log(move);
+        if (room.game.getShowWinBar() || room.game.getShowBestMoves()) {
+          console.log(3);
+          await room.game.setWinChanceAndBestMove();
+
+          if (room.game.getShowWinBar()) {
+            socket.emit("winChanceBar", room.game.getWinChance());
+          }
+
+          if (room.game.getShowBestMoves()) {
+            socket.emit("bestMove", room.game.getBestMove());
+          }
+        }
+        room.fen = room.game.getCurrentBoard();
+        socket.emit("computerMove", room.game.getCurrentBoard(), move);
+        socket.emit(
+          "updateNotation",
+          room.game.getNotation(),
+          room.game.chess.history({ verbose: true }),
+          room.game.getMoveNumber()
+        );
+      } else {
+        console.log(4);
+        if (room.game.getShowWinBar() || room.game.getShowBestMoves()) {
+          await room.game.setWinChanceAndBestMove();
+
+          if (room.game.getShowWinBar()) {
+            socket.emit("winChanceBar", room.game.getWinChance());
+          }
+
+          if (room.game.getShowBestMoves()) {
+            console.log("!!!!");
+            console.log(room.game.getBestMove());
+            socket.emit("bestMove", room.game.getBestMove());
+          }
+        }
+      }
+      callback({ roomId });
+    }
+  );
+
+  socket.on("computerMove", async (roomId) => {
+    const room = rooms.get(roomId);
+    if (!room) {
+      callback(false);
+      return;
+    } else {
+      const move = await room.game.makeComputerMove();
+      room.fen = room.game.getCurrentBoard();
+      socket.emit("computerMove", room.game.getCurrentBoard(), move);
+      socket.emit(
+        "updateNotation",
+        room.game.getNotation(),
+        room.game.chess.history({ verbose: true }),
+        room.game.getMoveNumber()
+      );
+      if (room.game.getIsGameOver()) {
+        socket.emit("gameOver", {
+          winColor: room.game.getWinner(),
+          gameTime: room.game.getGameDuration(),
+          reason: "gameOver",
+          roomId: room.roomId,
+        });
+        socket.emit("endGame");
+      } else {
+        if (room.game.getShowWinBar() || room.game.getShowBestMoves()) {
+          await room.game.setWinChanceAndBestMove();
+
+          if (room.game.getShowWinBar()) {
+            socket.emit("winChanceBar", room.game.getWinChance());
+          }
+
+          if (room.game.getShowBestMoves()) {
+            socket.emit("bestMove", room.game.getBestMove());
+          }
+        }
+      }
+    }
+  });
+
+  // 재 요청
+  socket.on("requestGameState", ({ username, socketId }, callback) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+
+    const player = room.players.find((p) => p.username === username);
+    const opponent = room.players.find((p) => p.username !== username);
+
+    if (player) {
+      player.socketId = socketId;
+
+      socket.join(room.roomId);
+    }
+    callback(
+      room,
+      player,
+      opponent,
+      room.game.getShowBestMoves(),
+      room.game.getShowWinBar(),
+      room.game.getBestMove(),
+      room.game.getWinChance()
+    );
+  });
+
+  socket.on("requestNotation", ({ username }, callback) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+    callback(
+      room.game.getNotation(),
+      room.game.chess.history({ verbose: true }),
+      room.game.getMoveNumber()
+    );
+  });
+
+  // 항복
+  socket.on("surrender", (username) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+    if (room.game.getGameType() === "playerVsComputer") {
+      console.log(room.game.player1.color);
+      room.game.surrender(room.game.player1.color);
+      socket.emit("gameOver", {
+        winColor: room.game.getWinner(),
+        gameTime: room.game.getGameDuration(),
+        reason: "surrender",
+        roomId: room.roomId,
+      });
+      socket.emit("endGame");
+    } else {
+      const player = room.players.find((p) => p.username === username);
+      room.game.surrender(player.color);
+      const winner = room.players.find(
+        (p) => p.color === room.game.getWinner()
+      );
+      io.in(room.roomId).emit("gameOver", {
+        winner,
+        winColor: room.game.getWinner(),
+        reason: "surrender",
+        gameTime: room.game.getGameDuration(),
+        eloResult: room.game.getEloResult(),
+        gameMode: room.gameMode,
+      });
+      io.in(room.roomId).emit("endGame");
+    }
+  });
+
   // 체스말 움직임
-  socket.on("move", (data) => {
-    console.log("data : ", data);
+  socket.on("onDrop", (moveData, roomId, userColor, callback) => {
+    const room = rooms.get(roomId);
+    if (!room) {
+      callback(false);
+      return;
+    } else {
+      if (userColor !== room.game.getCurrentPlayer()) {
+        console.log("not your turn");
+        callback(false);
+        return;
+      }
+      if (room.game.getGameType() === "playerVsComputer") {
+        console.log("vsComputer");
+        if (room.game.makeMove(moveData)) {
+          room.fen = room.game.getCurrentBoard();
 
-    const room = rooms.get(data.room);
+          if (room.game.getShowWinBar()) {
+            room.game.setWinChanceAndBestMove();
+            socket.emit("winChanceBar", room.game.getWinChance());
+          }
+          socket.emit(
+            "updateNotation",
+            room.game.getNotation(),
+            room.game.chess.history({ verbose: true }),
+            room.game.getMoveNumber()
+          );
+        } else {
+          callback(false);
+          return;
+        }
+        callback(true, room.game.getCurrentBoard(), room.game.getCurrentMove());
+        return;
+      } else {
+        console.log("vsPlayer");
+        if (room.game.makeMove(moveData)) {
+          room.fen = room.game.getCurrentBoard();
+          room.game.setCurrentPieceSquare("");
+          io.in(roomId).emit(
+            "move",
+            room.game.getCurrentBoard(),
+            room.game.getCurrentMove()
+          );
+          io.in(roomId).emit(
+            "updateNotation",
+            room.game.getNotation(),
+            room.game.chess.history({ verbose: true }),
+            room.game.getMoveNumber()
+          );
+          if (room.game.chess.isGameOver()) {
+            const winner = room.players.find(
+              (p) => p.color === room.game.getWinner()
+            );
+            io.in(roomId).emit("gameOver", {
+              winner,
+              winColor: room.game.getWinner(),
+              reason: "gameOver",
+              gameTime: room.game.getGameDuration(),
+              eloResult: room.game.getEloResult(),
+              gameMode: room.gameMode,
+            });
+
+            io.in(room.roomId).emit("endGame");
+          }
+          callback(true);
+          return;
+        } else {
+          callback(false);
+          return;
+        }
+      }
+    }
+  });
+
+  // 색 변경
+  socket.on("colorChange", (color) => {
+    socket.emit("colorChange", color);
+  });
+
+  socket.on("barChange", (state) => {
+    socket.emit("barChange", state);
+  });
+
+  socket.on("bestMoveChange", (state) => {
+    socket.emit("bestMoveChange", state);
+  });
+
+  // 피스 클릭
+  socket.on("pieceClick", (piece, square, userColor, roomId, callback) => {
+    const room = rooms.get(roomId);
     if (!room) return;
-    const color = data.color;
-    room.timers[room.currentTurn].stop();
-    room.currentTurn = color;
-    console.log(room.currentTurn);
-    room.timers[room.currentTurn].start();
-    // const now = Date.now();
-    // console.log(now);
-    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    // console.log(elapsedTime);
-    // room.timers[room.currentTurn] -= elapsedTime; // 현재 턴의 타이머 감소
 
-    // if (room.timers[room.currentTurn] <= 0) {
-    // io.to(room.roomId).emit("gameOver", {
-    // winner: room.currentTurn === "white" ? "black" : "white",
-    // reason: "timeout",
-    // });
-    // rooms.delete(room.roomId);
-    // return;
-    // }
+    if (userColor[0] !== piece[0]) return;
+    room.game.setCurrentPieceSquare(square);
+    const canMoveSquares = room.game.handleSquareClick(square);
+    callback(canMoveSquares);
+  });
 
-    // room.lastMoveTime = now;
-    // room.currentTurn = room.currentTurn === "white" ? "black" : "white";
+  // 스퀘어 클릭
+  socket.on("squareClick", (roomId, square, callback) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    if (room.game.getCurrentPieceSquare() === square) return;
+    callback(true, room.game.getCurrentPieceSquare());
+  });
 
-    socket.to(data.room).emit("move", data.move);
+  // 업데이트 보드
+  socket.on("moveClick", (history, username) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+    room.game.setCurrentBoard(history);
+    socket.emit("updateBoard", history);
   });
 
   socket.on("getRoomInfo", (roomId, callback) => {
@@ -153,26 +449,49 @@ io.on("connection", (socket) => {
   socket.on("getTimers", (roomId, callback) => {
     const room = rooms.get(roomId);
     if (!room) return callback({ error: "Room not found" });
-
-    // const now = Date.now();
-    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    // const timers = { ...room.timers };
     const timers = {
-      white: room.timers.white.getTime(),
-      black: room.timers.black.getTime(),
+      white: room.game.timers.white.getTime(),
+      black: room.game.timers.black.getTime(),
     };
-    // timers[room.currentTurn] -= elapsedTime;
+    const timeoutPlayer = room.game.checkTimeout();
+    const gameOver = room.game.getIsGameOver();
+    if (timeoutPlayer === "white" || timeoutPlayer === "black") {
+      room.game.handleGameOver();
+      const winner = room.players.find(
+        (p) => p.color === room.game.getWinner()
+      );
+      io.in(roomId).emit("gameOver", {
+        winner,
+        winColor: room.game.getWinner(),
+        reason: "timeOut",
+        gameTime: room.game.getGameDuration(),
+        eloResult: room.game.getEloResult(),
+        gameMode: room.gameMode,
+      });
 
-    // if (room.timers[room.currentTurn] <= 0) {
-    // io.to(room.roomId).emit("gameOver", {
-    // winner: room.currentTurn === "white" ? "black" : "white",
-    // reason: "timeout",
-    // });
-    // rooms.delete(room.roomId);
-    // return;
-    // }
+      io.in(room.roomId).emit("endGame");
+    }
+    callback({ timers, timeoutPlayer, gameOver });
+  });
 
-    callback({ timers });
+  socket.on("deleteRoom", (username) => {
+    console.log("delete room");
+    for (let [roomId, room] of rooms) {
+      const player = room.players.find((p) => p.username === username);
+      if (player) {
+        console.log(`${roomId} ${player.username}`);
+        rooms.delete(roomId);
+
+        socket.to(roomId).emit("roomDeleted");
+        return;
+      }
+    }
+  });
+
+  socket.on("computerRoomDelete", (roomId) => {
+    console.log(roomId);
+    rooms.delete(roomId);
+    console.log(rooms);
   });
 
   socket.on("disconnect", () => {
@@ -180,7 +499,9 @@ io.on("connection", (socket) => {
     const gameRooms = Array.from(rooms.values());
     gameRooms.forEach((room) => {
       console.log("disconnect room : ", room);
-      const userInRoom = room.players.find((player) => player.id === socket.id);
+      const userInRoom = room.players.find(
+        (player) => player.socketId === socket.id
+      );
 
       if (userInRoom) {
         if (room.players.length < 2) {
