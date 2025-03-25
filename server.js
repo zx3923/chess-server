@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { Server } from "socket.io";
 import { v4 as uuidv4 } from "uuid";
 import Timer from "./timer.js";
+import Game from "./game.js";
 
 const hostname = "localhost";
 
