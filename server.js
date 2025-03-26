@@ -23,9 +23,9 @@ const io = new Server(httpServer, {
 });
 
 io.on("connection", (socket) => {
-  console.log("a user connected");
+  console.log("a user connected. id: ", socket.id);
   // 매칭 요청
-  socket.on("joinQueue", ({ user, gameMode }) => {
+  socket.on("joinQueue", ({ user, gameMode, gameType }) => {
     if (!waitingQueues[gameMode]) {
       console.error(`Invalid game mode: ${gameMode}`);
       return;
@@ -37,7 +37,6 @@ io.on("connection", (socket) => {
     // 적합한 매칭이 있다면
     if (match) {
       const { player1, player2 } = match;
-      console.log(player1);
       const player1Color = Math.random() < 0.5 ? "white" : "black";
       const player2Color = player1Color === "white" ? "black" : "white";
       const roomId = uuidv4();
@@ -56,20 +55,24 @@ io.on("connection", (socket) => {
             id: player1.socketId,
             username: player1.username,
             color: player1Color,
+            rating: getRatingByMode(player1, gameMode),
           },
           {
             id: player2.socketId,
             username: player2.username,
             color: player2Color,
+            rating: getRatingByMode(player2, gameMode),
           },
         ],
-        // timers: { white: initialTime, black: initialTime },
         timers: {
           white: new Timer(initialTime),
           black: new Timer(initialTime),
         },
-        // lastMoveTime: Date.now(),
+        gameType,
+        lastMoveTime: Date.now(),
         currentTurn: "white",
+        gameMode,
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
       });
 
       io.to(player1.socketId).emit("matchFound", {
@@ -87,13 +90,72 @@ io.on("connection", (socket) => {
         roomId,
         initialTime,
       });
-
       const room = rooms.get(roomId);
       room.timers.white.start();
     } else {
       console.log("No match found, added to queue");
     }
   });
+
+  // 컴퓨터 대결 생성
+  socket.on(
+    "createComputerRoom",
+    (
+      user,
+      color,
+      gameType,
+      showBestMove,
+      showWinBar,
+      moveHistory,
+      notation,
+      isGameOver,
+      isGameStarted,
+      moveRow,
+      moveIndex,
+      bestMove,
+      winBar,
+      callback
+    ) => {
+      const existingRoom = [...rooms.values()].find((room) =>
+        room.players.some((player) => player.id === user.id)
+      );
+      if (existingRoom) {
+        if (existingRoom.gameType === "playerVsPlayer") {
+          return callback({ success: false, message: "Already in a room" });
+        }
+      }
+      const roomId = uuidv4();
+      rooms.set(roomId, {
+        roomId,
+        players: [
+          {
+            id: socket.id,
+            username: user.username,
+            color,
+          },
+          {
+            id: "computer",
+            username: "computer",
+          },
+        ],
+        gameType,
+        currentTurn: "white",
+        fen: "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        showBestMove,
+        showWinBar,
+        moveHistory,
+        notation,
+        isGameOver,
+        isGameStarted,
+        moveRow,
+        moveIndex,
+        bestMove,
+        winBar,
+        startTime: Date.now(),
+      });
+      callback({ success: true, roomId });
+    }
+  );
 
   // 매칭 취소
   socket.on("cancelMatching", (gameMode) => {
@@ -111,36 +173,55 @@ io.on("connection", (socket) => {
     }
   });
 
+  // 재 요청
+  socket.on("requestGameState", ({ username, socketId }, callback) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+
+    const player = room.players.find((p) => p.username === username);
+    const opponent = room.players.find((p) => p.username !== username);
+    if (player) {
+      player.socketId = socketId;
+      socket.join(room.roomId);
+    }
+    callback(room, player, opponent);
+  });
+
+  socket.on("requestNotation", ({ username }, callback) => {
+    const room = [...rooms.values()].find((r) =>
+      r.players.some((p) => p.username === username)
+    );
+    if (!room) return callback({ error: "Room not found" });
+    callback(room.notation, room.moveHistory, room.moveRow, room.moveIndex);
+  });
+
   // 체스말 움직임
   socket.on("move", (data) => {
-    console.log("data : ", data);
-
     const room = rooms.get(data.room);
     if (!room) return;
     const color = data.color;
     room.timers[room.currentTurn].stop();
     room.currentTurn = color;
-    console.log(room.currentTurn);
     room.timers[room.currentTurn].start();
-    // const now = Date.now();
-    // console.log(now);
-    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    // console.log(elapsedTime);
-    // room.timers[room.currentTurn] -= elapsedTime; // 현재 턴의 타이머 감소
-
-    // if (room.timers[room.currentTurn] <= 0) {
-    // io.to(room.roomId).emit("gameOver", {
-    // winner: room.currentTurn === "white" ? "black" : "white",
-    // reason: "timeout",
-    // });
-    // rooms.delete(room.roomId);
-    // return;
-    // }
-
-    // room.lastMoveTime = now;
-    // room.currentTurn = room.currentTurn === "white" ? "black" : "white";
-
+    room.fen = data.fen;
     socket.to(data.room).emit("move", data.move);
+  });
+
+  // 컴퓨터 대결 모드
+  socket.on("computerModeMove", (data) => {
+    const room = rooms.get(data.roomId);
+    if (!room) return;
+    console.log(data.moveIndex);
+    room.fen = data.fen;
+    room.currentTurn = data.color;
+    room.notation = data.notation;
+    room.moveHistory = [...room.moveHistory, data.moveHistory];
+    room.moveRow = data.moveRow;
+    room.moveIndex = data.moveIndex;
+    room.bestMove = data.bestMove;
+    room.winBar = data.winBar;
   });
 
   socket.on("getRoomInfo", (roomId, callback) => {
@@ -153,26 +234,33 @@ io.on("connection", (socket) => {
   socket.on("getTimers", (roomId, callback) => {
     const room = rooms.get(roomId);
     if (!room) return callback({ error: "Room not found" });
-
-    // const now = Date.now();
-    // const elapsedTime = (now - room.lastMoveTime) / 1000; // 경과 시간 (초 단위)
-    // const timers = { ...room.timers };
     const timers = {
       white: room.timers.white.getTime(),
       black: room.timers.black.getTime(),
     };
-    // timers[room.currentTurn] -= elapsedTime;
-
-    // if (room.timers[room.currentTurn] <= 0) {
-    // io.to(room.roomId).emit("gameOver", {
-    // winner: room.currentTurn === "white" ? "black" : "white",
-    // reason: "timeout",
-    // });
-    // rooms.delete(room.roomId);
-    // return;
-    // }
 
     callback({ timers });
+  });
+
+  // 게임종료
+  socket.on("gameover", (roomId) => {
+    rooms.delete(roomId);
+    console.log(`${roomId} delete`);
+  });
+
+  // 방 삭제
+  socket.on("deleteRoom", (username) => {
+    console.log("delete room");
+    for (let [roomId, room] of rooms) {
+      const player = room.players.find((p) => p.username === username);
+      if (player) {
+        console.log(`${roomId} ${player.username}`);
+        rooms.delete(roomId);
+
+        socket.to(roomId).emit("roomDeleted");
+        return;
+      }
+    }
   });
 
   socket.on("disconnect", () => {
@@ -181,15 +269,7 @@ io.on("connection", (socket) => {
     gameRooms.forEach((room) => {
       console.log("disconnect room : ", room);
       const userInRoom = room.players.find((player) => player.id === socket.id);
-
-      if (userInRoom) {
-        if (room.players.length < 2) {
-          rooms.delete(room.roomId);
-          return;
-        }
-
-        socket.to(room.roomId).emit("playerDisconnected", userInRoom);
-      }
+      console.log(userInRoom);
     });
   });
 });
